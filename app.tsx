@@ -153,7 +153,7 @@ export default definePluginApp((app) => {
       style.textContent = `
         /* The SDK has additive sections but no native-form replacement slot.
            Hide the fallback only while our settings section renders successfully. */
-        body:has([data-auto-compact-settings]) [data-testid="plugin-detail-auto-compact"] section:has([aria-label="Global auto-compaction default"]) {
+        body:has([data-auto-compact-settings]) [data-testid="plugin-detail-auto-compact"] > :has([aria-label="Global auto-compaction default"]) {
           display: none;
         }
         body:has([data-testid="plugin-detail-auto-compact"]) [role="menu"] {
@@ -167,7 +167,6 @@ export default definePluginApp((app) => {
   });
   app.slots.settingsSection({
     id: "compaction-policies",
-    title: "Auto-compaction",
     component: CompactionSettings,
   });
   app.slots.experimental_threadHeaderAction({
