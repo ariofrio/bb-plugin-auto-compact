@@ -639,3 +639,47 @@ describe("provider auto-compaction modes", () => {
     await harness.lifecycle.dispose();
   });
 });
+
+describe("settings editor RPC", () => {
+  it("persists a partial edit without resetting other settings", async () => {
+    const { harness } = await loadHost(40_000, 200_000, undefined, "codex", {
+      enabled: false,
+      thresholdPercent: "95",
+      claudeCodeEnabled: "On",
+    });
+    await harness.behavior.callRpc("save_settings", {
+      codexEnabled: "On",
+      codexThresholdPercent: "20",
+    });
+    expect(
+      await harness.behavior.callRpc("usage", { threadId: THREAD_ID }),
+    ).toMatchObject({ enabled: true, thresholdPercent: 20 });
+    const status = JSON.parse(
+      (await harness.behavior.runCli(["status", "--json"])).stdout,
+    );
+    expect(status).toMatchObject({
+      enabled: false,
+      thresholdPercent: 95,
+      providerEnabledOverrides: { "claude-code": true, codex: true },
+    });
+    await harness.lifecycle.dispose();
+  });
+
+  it.each([
+    { thresholdPercent: "0" },
+    { codexThresholdPercent: "100" },
+    { piEnabled: "maybe" },
+    { unknown: true },
+    {},
+    { enabled: "false" },
+  ])("rejects invalid edits atomically: %j", async (input) => {
+    const { harness } = await loadHost(0);
+    await expect(
+      harness.behavior.callRpc("save_settings", input),
+    ).rejects.toThrow();
+    expect(
+      JSON.parse((await harness.behavior.runCli(["status", "--json"])).stdout),
+    ).toMatchObject({ enabled: true, thresholdPercent: 80 });
+    await harness.lifecycle.dispose();
+  });
+});

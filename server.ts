@@ -79,7 +79,36 @@ const usageSchema = z.object({
   modelContextWindow: z.number().nullable(),
   thresholdPercent: z.number(),
 });
+const editableSettings = z
+  .object({
+    enabled: z.boolean().optional(),
+    thresholdPercent: z.enum(THRESHOLD_OPTIONS).optional(),
+    claudeCodeEnabled: z.enum([USE_GLOBAL, "On", "Off"]).optional(),
+    claudeCodeThresholdPercent: z
+      .enum([USE_GLOBAL, ...THRESHOLD_OPTIONS])
+      .optional(),
+    codexEnabled: z.enum([USE_GLOBAL, "On", "Off"]).optional(),
+    codexThresholdPercent: z
+      .enum([USE_GLOBAL, ...THRESHOLD_OPTIONS])
+      .optional(),
+    piEnabled: z.enum([USE_GLOBAL, "On", "Off"]).optional(),
+    piThresholdPercent: z.enum([USE_GLOBAL, ...THRESHOLD_OPTIONS]).optional(),
+  })
+  .strict()
+  .refine(
+    (values) => Object.keys(values).length > 0,
+    "Choose a setting to update",
+  );
 export const rpcContract = defineRpcContract({
+  save_settings: {
+    input: editableSettings,
+    output: z.object({
+      values: z.record(
+        z.string(),
+        z.union([z.string(), z.boolean(), z.number()]),
+      ),
+    }),
+  },
   compact_now: {
     input: z.object({ threadId: z.string().min(1) }).strict(),
     output: z.object({ result: z.string() }),
@@ -298,6 +327,9 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   bb.rpc.register(rpcContract, {
+    save_settings: async (values) => ({
+      values: await settings.experimental_set(values),
+    }),
     compact_now: async ({ threadId }) => ({
       result: await forceCompact(threadId),
     }),

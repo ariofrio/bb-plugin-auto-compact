@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { rpcContract } from "./server";
+import { CompactionSettings } from "./settings";
 
 /** Refresh the usage readout this often while the header is visible. */
 const POLL_MS = 30_000;
@@ -146,10 +147,15 @@ function CompactButton({ threadId }: { threadId: string }) {
 
 export default definePluginApp((app) => {
   app.contentScripts.register({
-    id: "threshold-menu-scrolling",
+    id: "compaction-settings-layout",
     mount() {
       const style = document.createElement("style");
       style.textContent = `
+        /* The SDK has additive sections but no native-form replacement slot.
+           Hide the fallback only while our settings section renders successfully. */
+        body:has([data-auto-compact-settings]) [data-testid="plugin-detail-auto-compact"] section:has([aria-label="Global auto-compaction default"]) {
+          display: none;
+        }
         body:has([data-testid="plugin-detail-auto-compact"]) [role="menu"] {
           max-height: min(20rem, var(--radix-dropdown-menu-content-available-height, 20rem));
           overflow-y: auto;
@@ -158,6 +164,11 @@ export default definePluginApp((app) => {
       document.head.append(style);
       return () => style.remove();
     },
+  });
+  app.slots.settingsSection({
+    id: "compaction-policies",
+    title: "Auto-compaction",
+    component: CompactionSettings,
   });
   app.slots.experimental_threadHeaderAction({
     id: "compact-now",

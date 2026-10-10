@@ -56,7 +56,9 @@ checks skip quietly instead of retrying on every idle event.
 
 ## Settings
 
-Configure under Settings → Auto Compact, or via:
+Configure under Settings → Auto Compact. The table has one row per provider
+with Mode and Threshold side by side; **Default: …** displays inheritance
+(`"Use global"` in stored configuration). Changes save automatically. Or use:
 
 ```sh
 bb plugin config auto-compact set enabled false

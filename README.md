@@ -11,6 +11,8 @@ configurable percentage (default 80%).
   Threads whose provider cannot compact are reported as unsupported and skipped quietly.
 - `app.tsx` — a **Compact** button in every thread header that compacts the
   visible thread on demand via the `compact_now` RPC.
+- `settings.tsx` — a compact settings table with one row for global defaults
+  and one per provider, using BB's vendored responsive select controls.
 - `skills/auto-compact/SKILL.md` — tells agents how the plugin behaves and
   how to use the CLI. BB imports it into agent threads automatically.
 - `server.test.ts` — unit tests over the official fake-plugin harness
@@ -28,11 +30,11 @@ bb plugin config auto-compact set codexEnabled Off
 bb plugin config auto-compact set codexThresholdPercent "Use global"
 ```
 
-In **Settings → Auto Compact**, global defaults come first, followed by a paired
-auto-compaction mode and context threshold for each provider (Claude Code,
-Codex, and Pi):
+In **Settings → Auto Compact**, one table pairs **Mode** and **Threshold** in
+each row: global defaults, Claude Code, Codex, and Pi.
 
-- **Use global** follows the corresponding global default.
+- **Default** follows the corresponding global default and shows its current
+  value (for example, **Default: Off** or **Default: 80%**).
 - **On** enables the plugin's automatic compaction for that provider, even
   when the global default is off.
 - **Off** leaves automatic compaction to the provider's harness. Manual
@@ -49,8 +51,11 @@ to native compaction. A threshold triggers compaction after a turn settles; it
 does not cap the context window. The header's usage indicator turns red at the
 effective threshold only when auto-compaction is on for that thread.
 
-The settings use BB's native dropdowns and autosave. The SDK does not offer a
-slider descriptor; a slider would require a custom settings section.
+Changes save automatically, and failures appear beside the table. The custom
+settings section uses BB's responsive dropdowns, with a bottom sheet on phones.
+The SDK has no slider descriptor; this custom section could support one, but
+dropdowns keep explicit percentages and inheritance together in the same control.
+The native form remains a fallback if the custom section cannot load.
 
 Run `npm test` for the suite, `npm run check` for the typecheck, and
 `bb plugin build` before reinstalling.
