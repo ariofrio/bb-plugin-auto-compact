@@ -19,10 +19,21 @@ const THRESHOLD_OPTIONS = Array.from({ length: 19 }, (_, i) =>
 );
 const USE_GLOBAL = "Use global";
 
+function providerEnabledSetting(provider: string) {
+  return {
+    type: "select" as const,
+    label: `${provider} auto-compaction`,
+    description:
+      "Use the global default, force On, or choose Off to leave automatic compaction to the provider.",
+    options: [USE_GLOBAL, "On", "Off"],
+    default: USE_GLOBAL,
+  };
+}
+
 function providerThresholdSetting(provider: string) {
   return {
     type: "select" as const,
-    label: `${provider} threshold override (%)`,
+    label: `${provider} context threshold (%)`,
     description:
       "Use the global threshold, or choose a percentage for this provider only.",
     options: [USE_GLOBAL, ...THRESHOLD_OPTIONS],
@@ -62,6 +73,7 @@ function isUnsupportedCompaction(error: unknown): boolean {
 // RPC contract for the thread-header Compact button (app.tsx imports only
 // this contract's type; the backend module is erased from the bundle).
 const usageSchema = z.object({
+  enabled: z.boolean(),
   percent: z.number().nullable(),
   usedTokens: z.number().nullable(),
   modelContextWindow: z.number().nullable(),
@@ -82,9 +94,9 @@ export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
     enabled: {
       type: "boolean",
-      label: "Auto-compact threads",
+      label: "Global auto-compaction default",
       description:
-        "When on, idle or failed threads are compacted once context usage reaches the threshold.",
+        "Compact idle or failed threads at their context threshold. Each provider can override this default below.",
       default: true,
     },
     thresholdPercent: {
@@ -95,8 +107,11 @@ export default async function plugin(bb: BbPluginApi) {
       options: THRESHOLD_OPTIONS,
       default: "80",
     },
+    claudeCodeEnabled: providerEnabledSetting("Claude Code"),
     claudeCodeThresholdPercent: providerThresholdSetting("Claude Code"),
+    codexEnabled: providerEnabledSetting("Codex"),
     codexThresholdPercent: providerThresholdSetting("Codex"),
+    piEnabled: providerEnabledSetting("Pi"),
     piThresholdPercent: providerThresholdSetting("Pi"),
   });
   let cached = await settings.get();
@@ -114,15 +129,39 @@ export default async function plugin(bb: BbPluginApi) {
     };
   }
 
-  async function thresholdForThread(threadId: string): Promise<number> {
-    const global = Number(cached.thresholdPercent);
-    const overrides = providerThresholds();
-    if (Object.values(overrides).every((value) => value === null))
+  function providerEnabledOverrides(): Record<string, boolean | null> {
+    const override = (value: string) =>
+      value === USE_GLOBAL ? null : value === "On";
+    return {
+      "claude-code": override(cached.claudeCodeEnabled),
+      codex: override(cached.codexEnabled),
+      pi: override(cached.piEnabled),
+    };
+  }
+
+  async function policyForThread(threadId: string): Promise<{
+    enabled: boolean;
+    thresholdPercent: number;
+  }> {
+    const global = {
+      enabled: cached.enabled,
+      thresholdPercent: Number(cached.thresholdPercent),
+    };
+    const thresholds = providerThresholds();
+    const modes = providerEnabledOverrides();
+    if (
+      [...Object.values(thresholds), ...Object.values(modes)].every(
+        (value) => value === null,
+      )
+    )
       return global;
     const thread = await bb.sdk.threads.get({ threadId });
-    return Object.hasOwn(overrides, thread.providerId)
-      ? (overrides[thread.providerId] ?? global)
-      : global;
+    if (!Object.hasOwn(modes, thread.providerId)) return global;
+    return {
+      enabled: modes[thread.providerId] ?? global.enabled,
+      thresholdPercent:
+        thresholds[thread.providerId] ?? global.thresholdPercent,
+    };
   }
 
   // Threads currently being compacted; prevents overlapping compactions of
@@ -158,10 +197,11 @@ export default async function plugin(bb: BbPluginApi) {
     threadId: string,
     trigger: string,
   ): Promise<string> {
-    if (!cached.enabled) return "skipped: auto-compact is disabled";
     if (inFlight.has(threadId)) {
       return "skipped: compaction already in progress";
     }
+    const policy = await policyForThread(threadId);
+    if (!policy.enabled) return "skipped: auto-compact is disabled";
     const unsupportedAt = await bb.storage.kv.get<number>(
       `${UNSUPPORTED_KV_PREFIX}${threadId}`,
     );
@@ -182,7 +222,7 @@ export default async function plugin(bb: BbPluginApi) {
     }
     const { percent } = await readUsage(threadId);
     if (percent === null) return "skipped: usage unavailable";
-    const threshold = await thresholdForThread(threadId);
+    const threshold = policy.thresholdPercent;
     if (percent < threshold) {
       return `ok: ${percent.toFixed(1)}% < ${threshold}%`;
     }
@@ -263,7 +303,7 @@ export default async function plugin(bb: BbPluginApi) {
     }),
     usage: async ({ threadId }) => ({
       ...(await readUsage(threadId)),
-      thresholdPercent: await thresholdForThread(threadId),
+      ...(await policyForThread(threadId)),
     }),
   });
 
@@ -307,6 +347,7 @@ export default async function plugin(bb: BbPluginApi) {
             enabled: cached.enabled,
             thresholdPercent: Number(cached.thresholdPercent),
             providerThresholds: providerThresholds(),
+            providerEnabledOverrides: providerEnabledOverrides(),
             cooldownMinutes: COOLDOWN_MS / 60_000,
           };
           return {
@@ -314,11 +355,11 @@ export default async function plugin(bb: BbPluginApi) {
             stdout: json
               ? JSON.stringify(value)
               : [
-                  `enabled: ${value.enabled}`,
+                  `global auto-compaction: ${value.enabled ? "On" : "Off"}`,
                   `global threshold: ${value.thresholdPercent}%`,
                   ...Object.entries(value.providerThresholds).map(
                     ([provider, threshold]) =>
-                      `${provider}: ${threshold === null ? `Use global (${value.thresholdPercent}%)` : `${threshold}%`}`,
+                      `${provider}: ${value.providerEnabledOverrides[provider] === null ? `Use global (${value.enabled ? "On" : "Off"})` : value.providerEnabledOverrides[provider] ? "On" : "Off"}; threshold: ${threshold === null ? `Use global (${value.thresholdPercent}%)` : `${threshold}%`}`,
                   ),
                   `cooldown: ${value.cooldownMinutes} min`,
                 ].join("\n"),

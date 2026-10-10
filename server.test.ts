@@ -153,6 +153,7 @@ describe("usage RPC", () => {
       threadId: THREAD_ID,
     });
     expect(result).toEqual({
+      enabled: true,
       percent: 85,
       usedTokens: 170_000,
       modelContextWindow: 200_000,
@@ -455,6 +456,186 @@ describe("threshold settings", () => {
       thresholdPercent: 80,
       providerThresholds: { "claude-code": null, codex: 5, pi: null },
     });
+    await harness.lifecycle.dispose();
+  });
+});
+
+describe("provider auto-compaction modes", () => {
+  it("retains an independent threshold while Off and uses it after switching On", async () => {
+    const { harness, compactCalls } = await loadHost(40_000);
+    await harness.behavior.setSettings({
+      codexEnabled: "Off",
+      codexThresholdPercent: "20",
+    });
+    await harness.behavior.runCli(["check", THREAD_ID]);
+    expect(compactCalls).toEqual([]);
+    expect(
+      await harness.behavior.callRpc("usage", { threadId: THREAD_ID }),
+    ).toMatchObject({ enabled: false, thresholdPercent: 20 });
+    await harness.behavior.setSettings({ codexEnabled: "On" });
+    await harness.behavior.runCli(["check", THREAD_ID]);
+    expect(compactCalls).toEqual([THREAD_ID]);
+    await harness.lifecycle.dispose();
+  });
+  it.each([
+    ["claude-code", "claudeCodeEnabled"],
+    ["codex", "codexEnabled"],
+    ["pi", "piEnabled"],
+  ])(
+    "%s Off suppresses compaction above its threshold",
+    async (providerId, settingKey) => {
+      const { harness, compactCalls } = await loadHost(
+        190_000,
+        200_000,
+        undefined,
+        providerId,
+      );
+      await harness.behavior.setSettings({ [settingKey]: "Off" });
+      const result = await harness.behavior.runCli(["check", THREAD_ID]);
+      expect(result.stdout).toContain("auto-compact is disabled");
+      expect(compactCalls).toEqual([]);
+      expect(
+        await harness.behavior.callRpc("usage", { threadId: THREAD_ID }),
+      ).toMatchObject({ enabled: false, thresholdPercent: 80 });
+      await harness.lifecycle.dispose();
+    },
+  );
+
+  it.each([
+    ["claude-code", "claudeCodeEnabled"],
+    ["codex", "codexEnabled"],
+    ["pi", "piEnabled"],
+  ])(
+    "%s On overrides a disabled global default",
+    async (providerId, settingKey) => {
+      const { harness, compactCalls } = await loadHost(
+        160_000,
+        200_000,
+        undefined,
+        providerId,
+      );
+      await harness.behavior.setSettings({
+        enabled: false,
+        [settingKey]: "On",
+      });
+      await harness.behavior.runCli(["check", THREAD_ID]);
+      expect(compactCalls).toEqual([THREAD_ID]);
+      expect(
+        await harness.behavior.callRpc("usage", { threadId: THREAD_ID }),
+      ).toMatchObject({ enabled: true, thresholdPercent: 80 });
+      await harness.lifecycle.dispose();
+    },
+  );
+
+  it("mode inheritance follows global changes and can be restored", async () => {
+    const { harness } = await loadHost(0);
+    await harness.behavior.setSettings({ enabled: false });
+    expect(
+      await harness.behavior.callRpc("usage", { threadId: THREAD_ID }),
+    ).toMatchObject({ enabled: false });
+    await harness.behavior.setSettings({ codexEnabled: "On" });
+    expect(
+      await harness.behavior.callRpc("usage", { threadId: THREAD_ID }),
+    ).toMatchObject({ enabled: true });
+    await harness.behavior.setSettings({ codexEnabled: "Use global" });
+    expect(
+      await harness.behavior.callRpc("usage", { threadId: THREAD_ID }),
+    ).toMatchObject({ enabled: false });
+    await harness.behavior.setSettings({ enabled: true });
+    expect(
+      await harness.behavior.callRpc("usage", { threadId: THREAD_ID }),
+    ).toMatchObject({ enabled: true });
+    await harness.lifecycle.dispose();
+  });
+
+  it("enables Claude at 20% of 1M while leaving Codex to native compaction", async () => {
+    for (const providerId of ["claude-code", "codex"]) {
+      const { harness, compactCalls } = await loadHost(
+        200_000,
+        1_000_000,
+        undefined,
+        providerId,
+      );
+      await harness.behavior.setSettings({
+        enabled: false,
+        claudeCodeEnabled: "On",
+        claudeCodeThresholdPercent: "20",
+        codexEnabled: "Off",
+      });
+      await harness.behavior.runCli(["check", THREAD_ID]);
+      expect(compactCalls).toEqual(
+        providerId === "claude-code" ? [THREAD_ID] : [],
+      );
+      await harness.lifecycle.dispose();
+    }
+  });
+
+  it("Off applies to failed events and manual compaction remains available", async () => {
+    const { harness, compactCalls } = await loadHost(190_000);
+    await harness.behavior.setSettings({ codexEnabled: "Off" });
+    await harness.behavior.emitThreadEvent("thread.failed", {
+      thread: makeThreadResponse({ id: THREAD_ID }),
+      error: "context exceeded",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(compactCalls).toEqual([]);
+    expect(
+      await harness.behavior.callRpc("compact_now", { threadId: THREAD_ID }),
+    ).toEqual({ result: "compacted" });
+    expect(compactCalls).toEqual([THREAD_ID]);
+    await harness.lifecycle.dispose();
+  });
+
+  it.each(["acp-custom", "constructor"])(
+    "%s inherits global mode despite another provider's On override",
+    async (providerId) => {
+      const { harness, compactCalls } = await loadHost(
+        190_000,
+        200_000,
+        undefined,
+        providerId,
+      );
+      await harness.behavior.setSettings({
+        enabled: false,
+        claudeCodeEnabled: "On",
+      });
+      await harness.behavior.runCli(["check", THREAD_ID]);
+      expect(compactCalls).toEqual([]);
+      expect(
+        await harness.behavior.callRpc("usage", { threadId: THREAD_ID }),
+      ).toMatchObject({ enabled: false });
+      await harness.lifecycle.dispose();
+    },
+  );
+
+  it.each(["claudeCodeEnabled", "codexEnabled", "piEnabled"])(
+    "rejects invalid %s",
+    async (settingKey) => {
+      const { harness } = await loadHost(0);
+      await expect(
+        harness.behavior.setSettings({ [settingKey]: "sometimes" }),
+      ).rejects.toThrow();
+      await harness.behavior.setSettings({ [settingKey]: "Use global" });
+      await harness.lifecycle.dispose();
+    },
+  );
+
+  it("status reports mode overrides and inherited defaults", async () => {
+    const { harness } = await loadHost(0);
+    await harness.behavior.setSettings({
+      enabled: false,
+      claudeCodeEnabled: "On",
+      codexEnabled: "Off",
+    });
+    const result = await harness.behavior.runCli(["status", "--json"]);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      enabled: false,
+      providerEnabledOverrides: { "claude-code": true, codex: false, pi: null },
+    });
+    const text = await harness.behavior.runCli(["status"]);
+    expect(text.stdout).toContain("claude-code: On");
+    expect(text.stdout).toContain("codex: Off");
+    expect(text.stdout).toContain("pi: Use global (Off)");
     await harness.lifecycle.dispose();
   });
 });

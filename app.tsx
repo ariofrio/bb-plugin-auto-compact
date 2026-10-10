@@ -63,6 +63,7 @@ function CompactButton({ threadId }: { threadId: string }) {
   const [running, setRunning] = useState(false);
   const [percent, setPercent] = useState<number | null>(null);
   const [threshold, setThreshold] = useState(80);
+  const [autoEnabled, setAutoEnabled] = useState<boolean | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -72,6 +73,7 @@ function CompactButton({ threadId }: { threadId: string }) {
         if (!cancelled) {
           setPercent(usage.percent);
           setThreshold(usage.thresholdPercent);
+          setAutoEnabled(usage.enabled);
         }
       } catch {
         // Ephemeral read; the next poll retries.
@@ -108,16 +110,17 @@ function CompactButton({ threadId }: { threadId: string }) {
       const usage = await rpc.call("usage", { threadId });
       setPercent(usage.percent);
       setThreshold(usage.thresholdPercent);
+      setAutoEnabled(usage.enabled);
     } catch {
       // Readout refreshes on the next poll.
     }
   }
 
-  const hot = percent !== null && percent >= threshold;
+  const hot = autoEnabled === true && percent !== null && percent >= threshold;
   const title =
     percent === null
-      ? "Compact this thread now"
-      : `Context usage ${percent.toFixed(0)}%${hot ? ` (at the ${threshold}% auto-compact threshold)` : ""} — compact this thread now`;
+      ? `${autoEnabled === false ? "Auto-compaction off — " : ""}Compact this thread now`
+      : `Context usage ${percent.toFixed(0)}%${autoEnabled === false ? " (auto-compaction off)" : hot ? ` (at the ${threshold}% auto-compact threshold)` : ""} — compact this thread now`;
 
   return (
     <button
