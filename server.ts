@@ -14,6 +14,21 @@ import { z } from "zod";
 const COOLDOWN_MS = 15 * 60_000;
 const LAST_COMPACT_KV_PREFIX = "last-compact:";
 const UNSUPPORTED_KV_PREFIX = "unsupported-compact:";
+const THRESHOLD_OPTIONS = Array.from({ length: 19 }, (_, i) =>
+  String((i + 1) * 5),
+);
+const USE_GLOBAL = "Use global";
+
+function providerThresholdSetting(provider: string) {
+  return {
+    type: "select" as const,
+    label: `${provider} threshold override (%)`,
+    description:
+      "Use the global threshold, or choose a percentage for this provider only.",
+    options: [USE_GLOBAL, ...THRESHOLD_OPTIONS],
+    default: USE_GLOBAL,
+  };
+}
 
 /** Percentage of `window` consumed by `used`, or null when unmeasurable. */
 export function usagePercent(
@@ -74,17 +89,41 @@ export default async function plugin(bb: BbPluginApi) {
     },
     thresholdPercent: {
       type: "select",
-      label: "Compact when context usage reaches",
+      label: "Global context threshold (%)",
       description:
-        "Percentage of the model's context window at which a thread is compacted.",
-      options: ["70", "75", "80", "85", "90", "95"],
+        "Compact at this percentage of the model's context window. Applies to all providers unless overridden below; 5–95% in steps of 5%.",
+      options: THRESHOLD_OPTIONS,
       default: "80",
     },
+    claudeCodeThresholdPercent: providerThresholdSetting("Claude Code"),
+    codexThresholdPercent: providerThresholdSetting("Codex"),
+    piThresholdPercent: providerThresholdSetting("Pi"),
   });
   let cached = await settings.get();
   settings.onChange((next) => {
     cached = next;
   });
+
+  function providerThresholds(): Record<string, number | null> {
+    const override = (value: string) =>
+      value === USE_GLOBAL ? null : Number(value);
+    return {
+      "claude-code": override(cached.claudeCodeThresholdPercent),
+      codex: override(cached.codexThresholdPercent),
+      pi: override(cached.piThresholdPercent),
+    };
+  }
+
+  async function thresholdForThread(threadId: string): Promise<number> {
+    const global = Number(cached.thresholdPercent);
+    const overrides = providerThresholds();
+    if (Object.values(overrides).every((value) => value === null))
+      return global;
+    const thread = await bb.sdk.threads.get({ threadId });
+    return Object.hasOwn(overrides, thread.providerId)
+      ? (overrides[thread.providerId] ?? global)
+      : global;
+  }
 
   // Threads currently being compacted; prevents overlapping compactions of
   // the same thread from concurrent idle/failed events.
@@ -115,12 +154,14 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
-  async function checkThread(threadId: string, trigger: string): Promise<string> {
+  async function checkThread(
+    threadId: string,
+    trigger: string,
+  ): Promise<string> {
     if (!cached.enabled) return "skipped: auto-compact is disabled";
     if (inFlight.has(threadId)) {
       return "skipped: compaction already in progress";
     }
-    const threshold = Number(cached.thresholdPercent);
     const unsupportedAt = await bb.storage.kv.get<number>(
       `${UNSUPPORTED_KV_PREFIX}${threadId}`,
     );
@@ -141,6 +182,7 @@ export default async function plugin(bb: BbPluginApi) {
     }
     const { percent } = await readUsage(threadId);
     if (percent === null) return "skipped: usage unavailable";
+    const threshold = await thresholdForThread(threadId);
     if (percent < threshold) {
       return `ok: ${percent.toFixed(1)}% < ${threshold}%`;
     }
@@ -165,10 +207,7 @@ export default async function plugin(bb: BbPluginApi) {
     } finally {
       inFlight.delete(threadId);
     }
-    await bb.storage.kv.set(
-      `${LAST_COMPACT_KV_PREFIX}${threadId}`,
-      Date.now(),
-    );
+    await bb.storage.kv.set(`${LAST_COMPACT_KV_PREFIX}${threadId}`, Date.now());
     bb.log.info(
       `Auto-compacted thread ${threadId} at ${percent.toFixed(1)}% of context window (${trigger}, threshold ${threshold}%).`,
     );
@@ -213,10 +252,7 @@ export default async function plugin(bb: BbPluginApi) {
     } finally {
       inFlight.delete(threadId);
     }
-    await bb.storage.kv.set(
-      `${LAST_COMPACT_KV_PREFIX}${threadId}`,
-      Date.now(),
-    );
+    await bb.storage.kv.set(`${LAST_COMPACT_KV_PREFIX}${threadId}`, Date.now());
     bb.log.info(`Manually compacted thread ${threadId}.`);
     return "compacted";
   }
@@ -227,7 +263,7 @@ export default async function plugin(bb: BbPluginApi) {
     }),
     usage: async ({ threadId }) => ({
       ...(await readUsage(threadId)),
-      thresholdPercent: Number(cached.thresholdPercent),
+      thresholdPercent: await thresholdForThread(threadId),
     }),
   });
 
@@ -253,7 +289,8 @@ export default async function plugin(bb: BbPluginApi) {
       },
       {
         name: "now",
-        summary: "Compact a thread immediately, bypassing threshold and cooldown",
+        summary:
+          "Compact a thread immediately, bypassing threshold and cooldown",
         usage: "bb auto-compact now [thread-id] [--json]",
       },
     ],
@@ -269,13 +306,22 @@ export default async function plugin(bb: BbPluginApi) {
           const value = {
             enabled: cached.enabled,
             thresholdPercent: Number(cached.thresholdPercent),
+            providerThresholds: providerThresholds(),
             cooldownMinutes: COOLDOWN_MS / 60_000,
           };
           return {
             exitCode: 0,
             stdout: json
               ? JSON.stringify(value)
-              : `enabled: ${value.enabled}\nthreshold: ${value.thresholdPercent}%\ncooldown: ${value.cooldownMinutes} min`,
+              : [
+                  `enabled: ${value.enabled}`,
+                  `global threshold: ${value.thresholdPercent}%`,
+                  ...Object.entries(value.providerThresholds).map(
+                    ([provider, threshold]) =>
+                      `${provider}: ${threshold === null ? `Use global (${value.thresholdPercent}%)` : `${threshold}%`}`,
+                  ),
+                  `cooldown: ${value.cooldownMinutes} min`,
+                ].join("\n"),
           };
         }
         case "check": {

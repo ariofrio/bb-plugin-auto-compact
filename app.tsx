@@ -142,6 +142,20 @@ function CompactButton({ threadId }: { threadId: string }) {
 }
 
 export default definePluginApp((app) => {
+  app.contentScripts.register({
+    id: "threshold-menu-scrolling",
+    mount() {
+      const style = document.createElement("style");
+      style.textContent = `
+        body:has([data-testid="plugin-detail-auto-compact"]) [role="menu"] {
+          max-height: min(20rem, var(--radix-dropdown-menu-content-available-height, 20rem));
+          overflow-y: auto;
+        }
+      `;
+      document.head.append(style);
+      return () => style.remove();
+    },
+  });
   app.slots.experimental_threadHeaderAction({
     id: "compact-now",
     title: "Compact now",
