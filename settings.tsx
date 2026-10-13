@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRpc, useSettings } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import {
@@ -64,7 +64,7 @@ export function CompactionSettings() {
   useEffect(() => setDisplay(values), [values]);
 
   const settingsAvailable = Boolean(display);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (settingsAvailable && settingsRef.current) {
       return replaceNativeSettings(settingsRef.current);
     }
