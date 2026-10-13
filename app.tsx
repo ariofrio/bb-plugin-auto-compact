@@ -146,25 +146,6 @@ function CompactButton({ threadId }: { threadId: string }) {
 }
 
 export default definePluginApp((app) => {
-  app.contentScripts.register({
-    id: "compaction-settings-layout",
-    mount() {
-      const style = document.createElement("style");
-      style.textContent = `
-        /* The SDK has additive sections but no native-form replacement slot.
-           Hide the fallback only while our settings section renders successfully. */
-        body:has([data-auto-compact-settings]) [data-testid="plugin-detail-auto-compact"] > :has([aria-label="Global auto-compaction default"]) {
-          display: none;
-        }
-        body:has([data-testid="plugin-detail-auto-compact"]) [role="menu"] {
-          max-height: min(20rem, var(--radix-dropdown-menu-content-available-height, 20rem));
-          overflow-y: auto;
-        }
-      `;
-      document.head.append(style);
-      return () => style.remove();
-    },
-  });
   app.slots.settingsSection({
     id: "compaction-policies",
     component: CompactionSettings,
