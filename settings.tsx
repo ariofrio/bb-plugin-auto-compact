@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRpc, useSettings } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import {
@@ -8,6 +8,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./components/ui/select";
+
+import { replaceNativeSettings } from "./settings-layout";
 
 const THRESHOLDS = Array.from({ length: 19 }, (_, i) => String((i + 1) * 5));
 const PROVIDERS = [
@@ -53,12 +55,20 @@ function Choice({
 }
 
 export function CompactionSettings() {
+  const settingsRef = useRef<HTMLDivElement>(null);
   const { values, isLoading } = useSettings();
   const rpc = useRpc<typeof rpcContract>();
   const [display, setDisplay] = useState(values);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => setDisplay(values), [values]);
+
+  const settingsAvailable = Boolean(display);
+  useEffect(() => {
+    if (settingsAvailable && settingsRef.current) {
+      return replaceNativeSettings(settingsRef.current);
+    }
+  }, [settingsAvailable]);
 
   async function save(change: Parameters<typeof rpc.call<"save_settings">>[1]) {
     setSaving(true);
@@ -92,7 +102,7 @@ export function CompactionSettings() {
   }));
   const modes = ["On", "Off"].map((value) => ({ value, label: value }));
   return (
-    <div data-auto-compact-settings="" className="space-y-3">
+    <div ref={settingsRef} data-auto-compact-settings="" className="space-y-3">
       <div className="overflow-hidden rounded-md border border-border bg-card">
         <table
           className="w-full table-fixed text-sm"
